@@ -1,6 +1,9 @@
 import json
+import logging
 import re
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 def extract_ontology(text: str, prompt_content: str, model_config: dict, model_name: str, retry_count: int = 3) -> dict:
     provider = model_config.get("provider", "openai")
@@ -24,9 +27,20 @@ def extract_ontology(text: str, prompt_content: str, model_config: dict, model_n
             raw = _call_llm(provider, api_key, api_base, model_name, messages)
             return _parse_response(raw)
         except Exception as e:
+            logger.warning("本体提取 LLM 调用失败（第 %s/%s 次）: %s", attempt + 1, retry_count, e)
+            if not _is_retryable_llm_error(e):
+                raise
             if attempt == retry_count - 1:
                 raise
     return {}
+
+
+def _is_retryable_llm_error(error: Exception) -> bool:
+    """Only retry transport, rate-limit, and server-side failures."""
+    status_code = getattr(error, "status_code", None)
+    if status_code is None:
+        return True
+    return status_code in (408, 409, 429) or status_code >= 500
 
 
 def infer_relations(entities: list, existing_relations: list, text: str,
@@ -118,10 +132,15 @@ def _call_llm(provider: str, api_key: str, api_base: str | None, model: str, mes
         if api_base:
             kwargs["base_url"] = api_base
         client = openai.OpenAI(**kwargs)
-        create_kwargs: dict = {"model": model, "messages": messages, "timeout": 300, "max_tokens": 65536,
+        create_kwargs: dict = {"model": model, "messages": messages, "timeout": 300, "max_tokens": 16384,
                                "temperature": 0, "seed": _seed}
+        is_dashscope = bool(api_base and "dashscope.aliyuncs.com" in api_base)
+        if is_dashscope:
+            create_kwargs.pop("seed")
         if json_mode:
             create_kwargs["response_format"] = {"type": "json_object"}
+        if json_mode and is_dashscope:
+            create_kwargs["extra_body"] = {"enable_thinking": False}
         try:
             resp = client.chat.completions.create(**create_kwargs)
         except Exception:

@@ -115,7 +115,7 @@
     "uploading": "Uploading {{current}} / {{total}}…",
     "drop_release": "Drop to upload",
     "drag_hint": "Drag files here or click to select",
-    "supported": "Supports PDF, DOCX, XLSX, CSV, PPTX, PNG, JPG, MD",
+    "supported": "Supports PDF, DOCX, XLSX, CSV, PPTX, JSON, PNG, JPG, MD",
     "empty": "No files yet",
     "col_name": "Filename",
     "col_size": "Size",

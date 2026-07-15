@@ -105,6 +105,10 @@ class MappingService:
         link_results = self._process_link_mappings(ontology_id, mapping_meta)
         relation_results.extend(link_results)
 
+        semantic_result = self._infer_semantic_relations(ontology_id)
+        if semantic_result["count"]:
+            relation_results.append(semantic_result)
+
         # Phase 3: Logic / Action Discovery
         logic_result = self._discover_logic_rules(ontology_id, mappings, mapping_meta, relation_results)
         action_result = self._discover_action_types(ontology_id, mappings, mapping_meta, relation_results, logic_result)
@@ -142,6 +146,122 @@ class MappingService:
             "total_actions": action_result.get("total_v2", 0),
             "review_required": True,
             "publish_status": "draft",
+        }
+
+    def _infer_semantic_relations(self, ontology_id: str) -> dict:
+        """Use the configured text LLM to supplement sparse mapping relationships."""
+        from app.models.entity import Entity
+        from app.models.relation import Relation
+        from app.services import llm_service
+        from app.services.model_config_selector import llm_call_kwargs, select_llm_model_config
+
+        entities = self._db.query(Entity).filter(
+            Entity.ontology_id == ontology_id,
+        ).order_by(Entity.created_at, Entity.id).all()
+        relations = self._db.query(Relation).filter(Relation.ontology_id == ontology_id).all()
+        min_expected_relations = max(1, int(len(entities) * 0.3))
+        if len(entities) < 3 or len(relations) >= min_expected_relations:
+            return {"source": "semantic_inference", "count": 0}
+
+        model_config = select_llm_model_config(
+            self._db,
+            purpose_tags=("关系推断", "本体关系", "Link推断"),
+            allow_vlm=False,
+        )
+        call_kwargs = llm_call_kwargs(model_config)
+        if not call_kwargs:
+            logger.info("跳过语义关系补全：未配置文本 LLM")
+            return {"source": "semantic_inference", "count": 0}
+
+        known_entities = []
+        entity_by_name: dict[str, Entity] = {}
+        context_rows = []
+        for entity in entities[:50]:
+            name = entity.name_cn or entity.name_en
+            if not name:
+                continue
+            entity_by_name[name] = entity
+            known_entities.append({
+                "name_cn": name,
+                "type": entity.type or "Entity",
+                "description": entity.description or "",
+            })
+            context_rows.append({
+                "name": name,
+                "type": entity.type or "Entity",
+                "properties": entity.properties or {},
+            })
+
+        if len(known_entities) < 3:
+            return {"source": "semantic_inference", "count": 0}
+
+        try:
+            candidates = llm_service.infer_relations(
+                known_entities,
+                [],
+                json.dumps(context_rows, ensure_ascii=False, default=str)[:4000],
+                {
+                    "provider": call_kwargs.get("provider") or "openai",
+                    "api_key": call_kwargs.get("api_key") or "",
+                    "api_base": call_kwargs.get("api_base"),
+                },
+                call_kwargs["model"],
+            )
+        except Exception as exc:
+            logger.warning("语义关系补全失败（非致命）: %s", exc)
+            return {"source": "semantic_inference", "count": 0}
+
+        allowed_types = {
+            "IS-A", "PART-OF", "INSTANCE-OF", "SUPPLIES", "STORES", "PROCESSES",
+            "TREATS", "CAUSES", "TRIGGERS", "DEPENDS_ON", "PRODUCES", "HAS_STATUS",
+            "GOVERNED_BY", "ASSIGNED_TO",
+        }
+        existing_pairs = {(rel.source_entity, rel.target_entity) for rel in relations}
+        created: list[tuple[Relation, Entity, Entity]] = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            source = entity_by_name.get(str(candidate.get("source") or "").strip())
+            target = entity_by_name.get(str(candidate.get("target") or "").strip())
+            relation_type = str(candidate.get("type") or "").strip().upper()
+            if not source or not target or source.id == target.id or relation_type not in allowed_types:
+                continue
+            if (source.id, target.id) in existing_pairs:
+                continue
+            try:
+                confidence = float(candidate.get("confidence", 0.7))
+            except (TypeError, ValueError):
+                confidence = 0.7
+            relation = Relation(
+                id=self._stable_relation_id(
+                    ontology_id, source.id, target.id, relation_type, "semantic_inference"
+                ),
+                ontology_id=ontology_id,
+                source_entity=source.id,
+                target_entity=target.id,
+                type=relation_type,
+                properties={"source": "semantic_inference"},
+                confidence=min(0.85, max(0.0, confidence)),
+            )
+            self._db.merge(relation)
+            existing_pairs.add((source.id, target.id))
+            created.append((relation, source, target))
+
+        if not created:
+            return {"source": "semantic_inference", "count": 0}
+
+        self._db.commit()
+        for relation, source, target in created:
+            self._write_neo4j_relation(
+                ontology_id, source.type or "Entity", source.id,
+                target.type or "Entity", target.id, relation.type, relation.confidence,
+            )
+        return {
+            "source": "semantic_inference",
+            "src": "LLM",
+            "tgt": "known_entities",
+            "rel_type": "semantic",
+            "count": len(created),
         }
 
     # ── Relation 推断 ───────────────────────────────────────────────
@@ -1312,6 +1432,22 @@ class MappingService:
             neo.close()
         except Exception as e:
             logger.warning(f"Neo4j relation 写入失败（非致命）: {e}")
+
+    def _write_neo4j_relation(
+        self, ontology_id: str, src_class: str, src_id: str,
+        tgt_class: str, tgt_id: str, rel_type: str, confidence: float,
+    ) -> None:
+        try:
+            from app.services.v2.graph.neo4j_service import Neo4jService
+            neo = Neo4jService()
+            if neo.available:
+                neo.upsert_relation(
+                    src_class, src_id, tgt_class, tgt_id, rel_type,
+                    props={"ontology_id": ontology_id, "confidence": confidence},
+                )
+            neo.close()
+        except Exception as e:
+            logger.warning(f"Neo4j 语义关系写入失败（非致命）: {e}")
 
     # ── FK 检测（4 级策略）─────────────────────────────────────────
 

@@ -1,3 +1,4 @@
+import json
 import os
 from dataclasses import dataclass
 
@@ -44,6 +45,9 @@ def combine_converted_files(files) -> tuple[str | None, str | None]:
 def convert_document(file_path: str, mime_type: str | None = None) -> ConversionResult:
     ext = os.path.splitext(file_path)[1].lower()
 
+    if ext == ".json" or (mime_type and "application/json" in mime_type):
+        return _read_json_as_text(file_path)
+
     if ext in (".md", ".txt") or (mime_type and ("text/plain" in mime_type or "text/markdown" in mime_type)):
         return _read_plain_text(file_path)
 
@@ -84,6 +88,38 @@ def _read_plain_text(file_path: str) -> ConversionResult:
         return ConversionResult(content=content)
     except Exception as e:
         return ConversionResult(error=f"文本读取失败：{e}")
+
+
+def _read_json_as_text(file_path: str) -> ConversionResult:
+    try:
+        with open(file_path, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+        lines = _flatten_json(data)
+        if not lines:
+            return ConversionResult(error="JSON 文件为空")
+        return ConversionResult(content="\n".join(lines))
+    except json.JSONDecodeError as e:
+        return ConversionResult(error=f"JSON 格式无效：{e.msg}")
+    except Exception as e:
+        return ConversionResult(error=f"JSON 读取失败：{e}")
+
+
+def _flatten_json(value, path: str = "") -> list[str]:
+    if isinstance(value, dict):
+        return [
+            line
+            for key, item in value.items()
+            for line in _flatten_json(item, f"{path}.{key}" if path else str(key))
+        ]
+    if isinstance(value, list):
+        return [
+            line
+            for index, item in enumerate(value)
+            for line in _flatten_json(item, f"{path}[{index}]")
+        ]
+    label = path or "value"
+    rendered = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    return [f"{label}: {rendered}"]
 
 
 def _read_csv_as_markdown(file_path: str) -> ConversionResult:

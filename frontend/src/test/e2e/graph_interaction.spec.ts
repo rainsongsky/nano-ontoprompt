@@ -1,8 +1,8 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
 
 const BASE = 'http://localhost:5173'
 
-async function login(page: any) {
+async function login(page: Page) {
   await page.goto(`${BASE}/login`)
   await page.fill('input[placeholder="用户名"]', 'admin')
   await page.fill('input[placeholder="密码"]', 'admin123')
@@ -10,13 +10,13 @@ async function login(page: any) {
   await page.waitForURL(`${BASE}/overview`)
 }
 
-async function createOntology(page: any): Promise<string> {
-  await page.goto(`${BASE}/ontologies`)
-  await page.click('button:has-text("创建 Ontology")')
+async function createOntology(page: Page): Promise<string> {
+  await page.goto(`${BASE}/ontologies/new`)
+  await page.getByText('简易 LLM 提取').first().click()
   const name = `图谱测试-${Date.now()}`
-  await page.fill('input[placeholder="名称 *"]', name)
-  await page.click('button:has-text("确认")')
-  await page.waitForURL(/\/ontologies\/[a-f0-9-]+$/)
+  await page.fill('input[placeholder="本体名称"]', name)
+  await page.getByRole('button', { name: '创建本体' }).click()
+  await page.waitForURL(/\/ontologies\/[a-f0-9-]+/)
   return name
 }
 
@@ -41,6 +41,18 @@ test.describe('Graph Tab Interaction', () => {
     await page.waitForTimeout(1000)
     await expect(page.locator('text=节点')).toBeVisible()
     await expect(page.locator('text=边')).toBeVisible()
+  })
+
+  test('graph tab exposes layout and view controls', async ({ page }) => {
+    await createOntology(page)
+    await page.click('button:has-text("图谱")')
+
+    await expect(page.getByRole('button', { name: '力导向布局' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '层级布局' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '圆形布局' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '放大图谱' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '缩小图谱' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '适配视图' })).toBeVisible()
   })
 
   test('graph empty state has guidance message', async ({ page }) => {

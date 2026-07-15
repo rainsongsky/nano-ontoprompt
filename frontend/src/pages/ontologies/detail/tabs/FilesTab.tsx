@@ -56,6 +56,7 @@ export default function FilesTab({ ontologyId }: { ontologyId: string }) {
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
       'text/csv': ['.csv'],
       'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx'],
+      'application/json': ['.json'],
       'image/png': ['.png'],
       'image/jpeg': ['.jpg', '.jpeg'],
       'text/markdown': ['.md'],

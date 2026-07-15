@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { apiClientV2 } from '@/api/client'
-import { Search, Loader2 } from 'lucide-react'
+import { Search, Loader2, Maximize2, ZoomIn, ZoomOut } from 'lucide-react'
 import OntologySearchBox from '@/components/search/OntologySearchBox'
 import cytoscape from 'cytoscape'
 
@@ -26,6 +26,7 @@ interface IntegrationStatus {
 }
 
 type QueryMode = 'natural' | 'cypher'
+type GraphLayout = 'cose' | 'breadthfirst' | 'circle'
 
 const TYPE_COLORS: Record<string, string> = {
   Supplier: '#2563eb', supplier: '#2563eb', SupplierDatabase: '#2563eb', 供应商: '#2563eb',
@@ -67,6 +68,7 @@ export default function GraphTabV2({ ontologyId }: { ontologyId: string }) {
   const [graphData, setGraphData] = useState<GraphData | null>(null)
   const [loading, setLoading] = useState(true)
   const [hideIsolated, setHideIsolated] = useState(false)
+  const [layout, setLayout] = useState<GraphLayout>('cose')
   const [queryMode, setQueryMode] = useState<QueryMode>('natural')
   const [query, setQuery] = useState('')
   const [queryLoading, setQueryLoading] = useState(false)
@@ -222,7 +224,7 @@ export default function GraphTabV2({ ontologyId }: { ontologyId: string }) {
           }
         },
       ],
-      layout: {
+      layout: layout === 'cose' ? {
         name: 'cose',
         animate: false,
         randomize: true,
@@ -238,6 +240,17 @@ export default function GraphTabV2({ ontologyId }: { ontologyId: string }) {
         coolingFactor: 0.95,
         minTemp: 1.0,
         nodeDimensionsIncludeLabels: true,
+      } : layout === 'breadthfirst' ? {
+        name: 'breadthfirst',
+        animate: false,
+        directed: true,
+        padding: 60,
+        spacingFactor: 1.35,
+      } : {
+        name: 'circle',
+        animate: false,
+        padding: 60,
+        spacingFactor: 1.4,
       } as any,
     })
 
@@ -263,8 +276,10 @@ export default function GraphTabV2({ ontologyId }: { ontologyId: string }) {
       }
     }
 
-    cy.one('layoutstop', spreadIsolatedNodes)
-    window.setTimeout(spreadIsolatedNodes, 100)
+    if (layout === 'cose') {
+      cy.one('layoutstop', spreadIsolatedNodes)
+      window.setTimeout(spreadIsolatedNodes, 100)
+    }
 
     cy.on('tap', 'node', evt => {
       const nodeData = evt.target.data()
@@ -292,7 +307,7 @@ export default function GraphTabV2({ ontologyId }: { ontologyId: string }) {
       cy.destroy()
       cyRef.current = null
     }
-  }, [graphData, hideIsolated, ontologyId, navigate, i18n.language])
+  }, [graphData, hideIsolated, layout, ontologyId, navigate, i18n.language])
 
   const handleQuery = async () => {
     if (!query.trim()) return
@@ -350,6 +365,55 @@ export default function GraphTabV2({ ontologyId }: { ontologyId: string }) {
         </span>
         <span>节点 {nodes.length}</span>
         <span>边 {edges.length}</span>
+        <div className="flex items-center gap-1 rounded border bg-white p-1">
+          <span className="px-1 text-xs text-gray-400">布局</span>
+          {([
+            ['cose', '力导向'],
+            ['breadthfirst', '层级'],
+            ['circle', '圆形'],
+          ] as const).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              aria-label={`${label}布局`}
+              aria-pressed={layout === value}
+              disabled={!hasData}
+              onClick={() => setLayout(value)}
+              className={`rounded px-2 py-1 transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${layout === value ? 'bg-blue-600 text-white' : 'hover:bg-gray-100'}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            aria-label="放大图谱"
+            disabled={!hasData}
+            onClick={() => cyRef.current?.zoom(cyRef.current.zoom() * 1.2)}
+            className="rounded p-1 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <ZoomIn size={15} />
+          </button>
+          <button
+            type="button"
+            aria-label="缩小图谱"
+            disabled={!hasData}
+            onClick={() => cyRef.current?.zoom(cyRef.current.zoom() * 0.8)}
+            className="rounded p-1 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <ZoomOut size={15} />
+          </button>
+          <button
+            type="button"
+            aria-label="适配视图"
+            disabled={!hasData}
+            onClick={() => cyRef.current?.fit(cyRef.current.elements(), 28)}
+            className="rounded p-1 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Maximize2 size={15} />
+          </button>
+        </div>
         {quality && (
           <>
             <span className={`px-2 py-1 rounded-full border ${quality.quality_score >= 0.8 ? 'border-green-200 bg-green-50 text-green-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>

@@ -130,3 +130,38 @@ def test_supply_chain_mapping_golden_prd_242_semantics(db, admin_user):
     action_categories = {row[0] for row in db.query(OntologyActionType.action_category).filter(OntologyActionType.ontology_id == ontology.id).distinct().all()}
     assert {"crud", "state_transition", "link", "review", "repair", "writeback"} <= action_categories
     assert db.query(Action).filter(Action.ontology_id == ontology.id).count() >= len(action_categories)
+
+
+def test_build_all_supplements_sparse_single_mapping_with_semantic_relations(db, admin_user):
+    ontology = OntologyProject(
+        name="供应链语义补边", domain="供应链", build_mode="pipeline_mapping", created_by=admin_user.id,
+    )
+    db.add(ontology)
+    db.commit()
+    db.refresh(ontology)
+
+    curated = _add_curated(db, "supplier_orders")
+    _add_mapping(db, ontology.id, curated.id, "SupplierOrder", "order_id")
+    rows = [
+        {"order_id": "PO-001", "supplier_name": "天钢原材料有限公司", "material": "热轧钢板"},
+        {"order_id": "PO-002", "supplier_name": "华东包装科技", "material": "瓦楞纸箱"},
+        {"order_id": "PO-003", "supplier_name": "联达纸业", "material": "包装材料"},
+    ]
+    service = MappingService(db)
+    with patch("app.services.v2.dataset_service.DatasetService.preview", return_value=rows), \
+         patch.object(MappingService, "_write_neo4j", side_effect=lambda _self, _entity_class, entities: len(entities), autospec=True), \
+         patch.object(MappingService, "_write_neo4j_relation", return_value=None), \
+         patch("app.services.v2.vector.chroma_service.ChromaService.upsert_entities", return_value=None), \
+         patch("app.services.model_config_selector.select_llm_model_config", return_value=object()), \
+         patch("app.services.model_config_selector.llm_call_kwargs", return_value={"provider": "test", "api_key": "key", "model": "test-model"}), \
+         patch("app.services.llm_service.infer_relations", return_value=[{
+             "source": "PO-001", "target": "PO-002", "type": "DEPENDS_ON", "confidence": 0.77,
+         }]) as infer_relations:
+        result = service.build_all(ontology.id)
+
+    relation = db.query(Relation).filter(Relation.ontology_id == ontology.id).one()
+    assert result["total_relations"] == 1
+    assert relation.type == "DEPENDS_ON"
+    assert relation.confidence == 0.77
+    assert relation.properties == {"source": "semantic_inference"}
+    infer_relations.assert_called_once()
